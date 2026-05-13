@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -53,14 +54,27 @@ func whGotoFuturesPage(page playwright.Page) error {
 }
 
 func whExpandAllSections(page playwright.Page) {
+	// Expand all accordion sections
 	toggles := page.Locator(whSectionToggleSelector)
 	count, _ := toggles.Count()
 	logInfo("[WH] Expanding %d collapsed sections", count)
 	for i := 0; i < count; i++ {
 		_ = toggles.First().Click(playwright.LocatorClickOptions{Timeout: playwright.Float(3000)})
-		page.WaitForTimeout(400)
+		page.WaitForTimeout(300)
 	}
-	page.WaitForTimeout(1500)
+	page.WaitForTimeout(1000)
+
+	// Click all "Show More" buttons to reveal hidden markets within sections
+	showMore := page.Locator(`[data-test-id="ngs-desktop-horse-racing-future-races-app"] button:has-text("Show More")`)
+	smCount, _ := showMore.Count()
+	if smCount > 0 {
+		logInfo("[WH] Clicking %d 'Show More' buttons", smCount)
+		for i := 0; i < smCount; i++ {
+			_ = showMore.First().Click(playwright.LocatorClickOptions{Timeout: playwright.Float(3000)})
+			page.WaitForTimeout(500)
+		}
+		page.WaitForTimeout(1000)
+	}
 }
 
 func whScrapeMarkets(page playwright.Page) ([]Market, error) {
@@ -338,8 +352,50 @@ func runWHExplore() error {
 	whExpandAllSections(page)
 	saveDebug(page, "wh_explore_02_expanded.png")
 
+	// Check for any remaining collapsed elements anywhere on the page
+	anyCollapsed := page.Locator(`[aria-expanded="false"]`)
+	count, _ := anyCollapsed.Count()
+	logInfo("[WH] Remaining collapsed elements after expand: %d", count)
+	for i := 0; i < count && i < 20; i++ {
+		el := anyCollapsed.Nth(i)
+		tag, _ := el.Evaluate("el => el.tagName", nil)
+		text, _ := el.InnerText()
+		text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+		if len(text) > 80 {
+			text = text[:80]
+		}
+		logInfo("  [%d] tag=%v text=%q", i, tag, text)
+	}
+
+	// Check for "show more" / "view all" type buttons
+	for _, sel := range []string{
+		`button:has-text("Show more")`,
+		`button:has-text("View all")`,
+		`button:has-text("See all")`,
+		`button:has-text("More")`,
+		`[data-testid*="show-more"]`,
+		`[data-testid*="view-all"]`,
+		`[data-testid*="load-more"]`,
+	} {
+		n, _ := page.Locator(sel).Count()
+		if n > 0 {
+			logInfo("[WH] Found %d elements matching %q", n, sel)
+			for i := 0; i < n && i < 5; i++ {
+				t, _ := page.Locator(sel).Nth(i).InnerText()
+				logInfo("  [%d] %q", i, strings.TrimSpace(t))
+			}
+		}
+	}
+
+	// Dump full page HTML so we can inspect section structure
+	html, _ := page.Evaluate(`() => document.querySelector('[data-test-id="ngs-desktop-horse-racing-future-races-app"]')?.innerHTML`, nil)
+	htmlStr := fmt.Sprintf("%v", html)
+	// Write to a file so it's readable
+	_ = os.WriteFile("debug/wh_explore_page.html", []byte(htmlStr), 0644)
+	logInfo("[WH] Wrote full app HTML to debug/wh_explore_page.html (%d bytes)", len(htmlStr))
+
 	markets, _ := whScrapeMarkets(page)
-	logInfo("[WH] Found %d markets", len(markets))
+	logInfo("[WH] Found %d markets after expansion:", len(markets))
 	for _, m := range markets {
 		logInfo("  %s", m.Text)
 	}
