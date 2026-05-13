@@ -1,0 +1,5 @@
+state/
+logs/
+debug/
+scraper
+run_monitors.sh

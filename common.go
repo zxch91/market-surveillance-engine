@@ -1,0 +1,302 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/playwright-community/playwright-go"
+)
+
+const (
+	baseURL  = "https://www.paddypower.com"
+	startURL = "https://www.paddypower.com/horse-racing?tab=future"
+
+	marketsStateFile = "state/markets_state.json"
+	runnersStateFile = "state/runners_state.json"
+
+	raceLinkSelector   = `a[href^="/horse-racing/future/"]`
+	runnerRowSelector  = "racing-runner"
+	runnerNameSelector = ".racing-runner__selection-name"
+	runnerOddsSelector = ".btn-odds__label"
+)
+
+var cookieButtonCandidates = []string{
+	"#onetrust-accept-btn-handler",
+	`button[aria-label="Accept All"]`,
+	`button:has-text("Accept All")`,
+	`button:has-text("Allow All")`,
+	`button:has-text("Accept")`,
+	`button:has-text("I Accept")`,
+}
+
+var logger *log.Logger
+
+func ensureDirs() {
+	for _, d := range []string{"state", "logs", "debug"} {
+		_ = os.MkdirAll(d, 0755)
+	}
+}
+
+func setupLogging(logFile string) func() {
+	ensureDirs()
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("open log file: %v", err)
+	}
+	w := io.MultiWriter(f, os.Stdout)
+	logger = log.New(w, "", 0)
+	return func() { _ = f.Close() }
+}
+
+func logf(level, format string, args ...any) {
+	ts := time.Now().UTC().Format("2006-01-02T15:04:05Z07:00")
+	logger.Printf("%s | %s | %s", ts, level, fmt.Sprintf(format, args...))
+}
+
+func logInfo(format string, args ...any)  { logf("INFO", format, args...) }
+func logWarn(format string, args ...any)  { logf("WARNING", format, args...) }
+
+func nowUTC() string {
+	return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+func loadJSON(path string, v any) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logWarn("Failed to load JSON from %s: %s", path, err)
+		}
+		return
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		logWarn("Failed to parse JSON from %s: %s", path, err)
+	}
+}
+
+func saveJSON(path string, v any) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		logWarn("Failed to create dir for %s: %s", path, err)
+		return
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		logWarn("Failed to marshal JSON: %s", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		logWarn("Failed to write JSON to %s: %s", path, err)
+	}
+}
+
+func joinURL(base, href string) string {
+	b, err := url.Parse(base)
+	if err != nil {
+		return base + href
+	}
+	r, err := url.Parse(href)
+	if err != nil {
+		return base + href
+	}
+	return b.ResolveReference(r).String()
+}
+
+func createBrowserContext(pw *playwright.Playwright) (playwright.Browser, playwright.BrowserContext, error) {
+	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+		Headless:       playwright.Bool(true),
+		ExecutablePath: playwright.String("/home/ubuntu/.cache/ms-playwright/chromium-1200/chrome-linux64/chrome"),
+		Args:           []string{"--no-sandbox", "--disable-dev-shm-usage"},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("launch browser: %w", err)
+	}
+
+	ctx, err := browser.NewContext(playwright.BrowserNewContextOptions{
+		Viewport:   &playwright.Size{Width: 1440, Height: 1400},
+		Locale:     playwright.String("en-GB"),
+		TimezoneId: playwright.String("Europe/London"),
+		UserAgent: playwright.String(
+			"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+		),
+	})
+	if err != nil {
+		_ = browser.Close()
+		return nil, nil, fmt.Errorf("new context: %w", err)
+	}
+	return browser, ctx, nil
+}
+
+func dismissCookieBanner(page playwright.Page) {
+	for _, sel := range cookieButtonCandidates {
+		btn := page.Locator(sel).First()
+		visible, err := btn.IsVisible()
+		if err == nil && visible {
+			if err := btn.Click(playwright.LocatorClickOptions{Timeout: playwright.Float(5000)}); err == nil {
+				logInfo("Dismissed cookie banner with selector: %s", sel)
+				page.WaitForTimeout(1000)
+				return
+			}
+		}
+	}
+	if _, err := page.Evaluate(`() => {
+		const el = document.getElementById('onetrust-consent-sdk');
+		if (el) el.remove();
+	}`); err == nil {
+		logInfo("Removed cookie overlay as fallback")
+		page.WaitForTimeout(500)
+	}
+}
+
+func saveDebug(page playwright.Page, name string) {
+	path := filepath.Join("debug", name)
+	if _, err := page.Screenshot(playwright.PageScreenshotOptions{
+		Path:     playwright.String(path),
+		FullPage: playwright.Bool(true),
+	}); err != nil {
+		logWarn("Failed screenshot %s: %s", name, err)
+		return
+	}
+	logInfo("Saved screenshot: %s", path)
+}
+
+func sendTelegram(text string) bool {
+	token := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	chatID := strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID"))
+	if token == "" || chatID == "" {
+		logInfo("Telegram env vars not set, skipping Telegram send")
+		return false
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"chat_id":                  chatID,
+		"text":                     text,
+		"disable_web_page_preview": true,
+	})
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Post(
+		"https://api.telegram.org/bot"+token+"/sendMessage",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		logWarn("Telegram exception: %s", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode/100 == 2 {
+		logInfo("Telegram message sent")
+		return true
+	}
+	logWarn("Telegram send failed: %d", resp.StatusCode)
+	return false
+}
+
+// --- Cross-bookie notification helpers ---
+
+type RunnerUpdate struct {
+	Name      string
+	IsNew     bool
+	OldOdds   string
+	NewOdds   string
+	CrossOdds string // odds from the other bookie
+}
+
+// lookupOddsInState searches all markets in a state for a horse by name.
+func lookupOddsInState(state *RunnersState, horseName string) string {
+	key := strings.ToLower(strings.TrimSpace(horseName))
+	for _, market := range state.Markets {
+		if r, ok := market.Runners[key]; ok && r.Odds != "" {
+			return r.Odds
+		}
+	}
+	return ""
+}
+
+// parseOdds converts a fractional odds string (e.g. "5/1", "7/2", "Evs") to
+// a float representing profit per unit stake. Returns -1 if unparseable.
+func parseOdds(s string) float64 {
+	s = strings.TrimSpace(strings.ToLower(s))
+	switch s {
+	case "evs", "evens", "1/1":
+		return 1.0
+	}
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return -1
+	}
+	num, err1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	den, err2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err1 != nil || err2 != nil || den == 0 {
+		return -1
+	}
+	return num / den
+}
+
+// movementLabel returns a movement description if odds changed, empty string otherwise.
+func movementLabel(oldOdds, newOdds string) string {
+	old := parseOdds(oldOdds)
+	nw := parseOdds(newOdds)
+	if old < 0 || nw < 0 {
+		return ""
+	}
+	if nw < old {
+		return " 📉 shortened"
+	}
+	if nw > old {
+		return " 📈 drifted"
+	}
+	return ""
+}
+
+const telegramMaxLen = 3800 // leave headroom under Telegram's 4096 limit
+
+// formatRunnerBlock formats one runner update entry.
+func formatRunnerBlock(bookie, crossBookie string, u RunnerUpdate) string {
+	cross := u.CrossOdds
+	if cross == "" {
+		cross = "not listed"
+	}
+	if u.IsNew {
+		return fmt.Sprintf("\n🆕 %s\n  %-14s %s\n  %-14s %s\n",
+			u.Name, bookie+":", u.NewOdds, crossBookie+":", cross)
+	}
+	movement := movementLabel(u.OldOdds, u.NewOdds)
+	return fmt.Sprintf("\n🐎 %s%s\n  %-14s %s → %s\n  %-14s %s\n",
+		u.Name, movement, bookie+":", u.OldOdds, u.NewOdds, crossBookie+":", cross)
+}
+
+// sendMarketUpdate sends one or more Telegram messages for a market's changes,
+// splitting automatically if the content exceeds Telegram's length limit.
+func sendMarketUpdate(bookie, crossBookie, marketText, marketURL string, updates []RunnerUpdate) {
+	header := fmt.Sprintf("📊 %s\n%s\n%s\n", marketText, bookie, marketURL)
+
+	msg := header
+	part := 1
+	total := (len(updates) + 14) / 15 // rough chunk estimate
+	_ = total
+
+	for _, u := range updates {
+		block := formatRunnerBlock(bookie, crossBookie, u)
+		if len(msg)+len(block) > telegramMaxLen {
+			sendTelegram(msg)
+			part++
+			msg = fmt.Sprintf("📊 %s (cont. %d)\n", marketText, part) + block
+		} else {
+			msg += block
+		}
+	}
+	if msg != header {
+		sendTelegram(msg)
+	}
+}
