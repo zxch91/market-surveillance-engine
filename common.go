@@ -212,12 +212,56 @@ type RunnerUpdate struct {
 	CrossOdds string // odds from the other bookie
 }
 
-// lookupOddsInState searches all markets in a state for a horse by name.
-func lookupOddsInState(state *RunnersState, horseName string) string {
+// coreRaceName strips dates, venues and suffixes to get the bare race name.
+// e.g. "Sat 25 Jul, Ascot - King George VI & Queen Elizabeth Stakes" → "king george vi & queen elizabeth stakes"
+// e.g. "Ascot 25th July - King George VI And Queen Elizabeth Stakes (Ante Post)" → "king george vi and queen elizabeth stakes"
+func coreRaceName(marketText string) string {
+	s := strings.ToLower(marketText)
+	if idx := strings.LastIndex(s, " - "); idx != -1 {
+		s = s[idx+3:]
+	}
+	for _, suffix := range []string{"(antepost)", "(ante post)", "(ante-post)", "antepost", "nrnb", "nrmb", "rule 4 may apply"} {
+		s = strings.ReplaceAll(s, suffix, "")
+	}
+	return strings.TrimSpace(s)
+}
+
+// raceNamesMatch returns true when two market texts refer to the same race,
+// using word-overlap on their core race names.
+func raceNamesMatch(a, b string) bool {
+	nameA := coreRaceName(a)
+	nameB := coreRaceName(b)
+	wordsA := strings.Fields(nameA)
+	setA := make(map[string]bool, len(wordsA))
+	for _, w := range wordsA {
+		if len(w) > 2 {
+			setA[w] = true
+		}
+	}
+	if len(setA) == 0 {
+		return false
+	}
+	matches := 0
+	for _, w := range strings.Fields(nameB) {
+		if len(w) > 2 && setA[w] {
+			matches++
+		}
+	}
+	// Require at least 60% of meaningful words to overlap
+	return float64(matches)/float64(len(setA)) >= 0.6
+}
+
+// lookupOddsInState finds a horse's odds on the other bookie, but ONLY within
+// a market that matches the same race. Returns "" if the race or horse is not listed.
+func lookupOddsInState(state *RunnersState, marketText, horseName string) string {
 	key := strings.ToLower(strings.TrimSpace(horseName))
 	for _, market := range state.Markets {
-		if r, ok := market.Runners[key]; ok && r.Odds != "" {
-			return r.Odds
+		if raceNamesMatch(marketText, market.MarketText) {
+			if r, ok := market.Runners[key]; ok && r.Odds != "" {
+				return r.Odds
+			}
+			// Race matched but horse not listed — return empty (shows as "not listed")
+			return ""
 		}
 	}
 	return ""
