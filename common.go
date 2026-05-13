@@ -212,43 +212,93 @@ type RunnerUpdate struct {
 	CrossOdds string // odds from the other bookie
 }
 
-// coreRaceName strips dates, venues and suffixes to get the bare race name.
-// e.g. "Sat 25 Jul, Ascot - King George VI & Queen Elizabeth Stakes" → "king george vi & queen elizabeth stakes"
-// e.g. "Ascot 25th July - King George VI And Queen Elizabeth Stakes (Ante Post)" → "king george vi and queen elizabeth stakes"
-func coreRaceName(marketText string) string {
-	s := strings.ToLower(marketText)
-	if idx := strings.LastIndex(s, " - "); idx != -1 {
-		s = s[idx+3:]
+var raceStopWords = map[string]bool{
+	"the": true, "and": true, "a": true, "an": true, "of": true,
+	"at": true, "in": true, "on": true, "by": true, "for": true,
+	"to": true, "la": true, "de": true, "du": true, "les": true,
+	"l": true, "rule": true, "apply": true,
+}
+
+var raceDateWords = map[string]bool{
+	"jan": true, "feb": true, "mar": true, "apr": true, "jun": true,
+	"jul": true, "aug": true, "sep": true, "oct": true, "nov": true,
+	"dec": true, "january": true, "february": true, "march": true,
+	"april": true, "may": true, "june": true, "july": true, "august": true,
+	"september": true, "october": true, "november": true, "december": true,
+	"mon": true, "tue": true, "wed": true, "thu": true, "fri": true,
+	"sat": true, "sun": true,
+}
+
+// normalizeRaceText strips noise (sponsors, dates, suffixes) before comparison.
+func normalizeRaceText(s string) string {
+	s = strings.ToLower(s)
+	for _, p := range []string{
+		"(antepost)", "(ante post)", "(ante-post)", "antepost",
+		"nrnb", "nrmb", "rule 4 may apply", "rule 4",
+		// sponsor prefixes
+		"betfred ", "coral ", "boyle sports ", "coolmore ", "trade nation ",
+		"qatar ", "boodles ", "singer ", "unibet ", "betway ", "sky bet ",
+	} {
+		s = strings.ReplaceAll(s, p, "")
 	}
-	for _, suffix := range []string{"(antepost)", "(ante post)", "(ante-post)", "antepost", "nrnb", "nrmb", "rule 4 may apply"} {
-		s = strings.ReplaceAll(s, suffix, "")
-	}
+	// normalise apostrophe contractions: "l'arc" → "arc", "novices'" → "novices"
+	s = strings.ReplaceAll(s, "l'arc", "arc")
+	s = strings.ReplaceAll(s, "larc", "arc")
+	s = strings.ReplaceAll(s, "'", "")
 	return strings.TrimSpace(s)
 }
 
-// raceNamesMatch returns true when two market texts refer to the same race,
-// using word-overlap on their core race names.
-func raceNamesMatch(a, b string) bool {
-	nameA := coreRaceName(a)
-	nameB := coreRaceName(b)
-	wordsA := strings.Fields(nameA)
-	setA := make(map[string]bool, len(wordsA))
-	for _, w := range wordsA {
-		if len(w) > 2 {
-			setA[w] = true
+func isNumericOrOrdinal(w string) bool {
+	if _, err := strconv.Atoi(w); err == nil {
+		return true
+	}
+	if len(w) >= 3 {
+		sfx := w[len(w)-2:]
+		if sfx == "st" || sfx == "nd" || sfx == "rd" || sfx == "th" {
+			if _, err := strconv.Atoi(w[:len(w)-2]); err == nil {
+				return true
+			}
 		}
 	}
-	if len(setA) == 0 {
+	return false
+}
+
+func significantRaceWords(marketText string) map[string]bool {
+	result := make(map[string]bool)
+	for _, w := range strings.Fields(normalizeRaceText(marketText)) {
+		w = strings.Trim(w, ".,()'-/&")
+		if len(w) < 3 || raceStopWords[w] || raceDateWords[w] || isNumericOrOrdinal(w) {
+			continue
+		}
+		result[w] = true
+	}
+	return result
+}
+
+// raceNamesMatch uses bidirectional word-overlap: returns true if at least 60%
+// of either side's significant words appear in the other. This handles sponsor
+// prefixes, venue words on one side only, and slight name variations.
+func raceNamesMatch(a, b string) bool {
+	wordsA := significantRaceWords(a)
+	wordsB := significantRaceWords(b)
+	if len(wordsA) == 0 || len(wordsB) == 0 {
 		return false
 	}
-	matches := 0
-	for _, w := range strings.Fields(nameB) {
-		if len(w) > 2 && setA[w] {
-			matches++
+	matchesAB, matchesBA := 0, 0
+	for w := range wordsA {
+		if wordsB[w] {
+			matchesAB++
 		}
 	}
-	// Require at least 60% of meaningful words to overlap
-	return float64(matches)/float64(len(setA)) >= 0.6
+	for w := range wordsB {
+		if wordsA[w] {
+			matchesBA++
+		}
+	}
+	// ceiling of 60% using integer arithmetic: (n*3+4)/5
+	threshA := (len(wordsA)*3 + 4) / 5
+	threshB := (len(wordsB)*3 + 4) / 5
+	return matchesAB >= threshA || matchesBA >= threshB
 }
 
 // lookupOddsInState finds a horse's odds on the other bookie, but ONLY within
@@ -260,11 +310,10 @@ func lookupOddsInState(state *RunnersState, marketText, horseName string) string
 			if r, ok := market.Runners[key]; ok && r.Odds != "" {
 				return r.Odds
 			}
-			// Race matched but horse not listed — return empty (shows as "not listed")
-			return ""
+			return "" // race matched, horse not listed
 		}
 	}
-	return ""
+	return "" // race not tracked on other bookie
 }
 
 // parseOdds converts a fractional odds string (e.g. "5/1", "7/2", "Evs") to
