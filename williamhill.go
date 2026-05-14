@@ -297,8 +297,20 @@ func runWHMonitor() error {
 		if err := whCheckOneMarket(page, market, &runnersState); err != nil {
 			logWarn("[WH] Error on market %s: %s", market.URL, err)
 			saveDebug(page, fmt.Sprintf("wh_runner_error_%d.png", idx+1))
-			// Recreate the page so the stuck state doesn't cascade to remaining markets
+
+			// If the browser itself crashed, recreate the full browser context.
+			// A simple page.Close+NewPage won't help if the underlying browser is dead.
+			isCrash := strings.Contains(err.Error(), "crashed") || strings.Contains(err.Error(), "Target closed")
 			_ = page.Close()
+			if isCrash {
+				logWarn("[WH] Browser crash detected — recreating browser context")
+				_ = browser.Close()
+				browser, ctx, err = createBrowserContext(pw)
+				if err != nil {
+					logWarn("[WH] Failed to recreate browser: %s", err)
+					break
+				}
+			}
 			page, err = ctx.NewPage()
 			if err != nil {
 				logWarn("[WH] Failed to recreate page: %s", err)

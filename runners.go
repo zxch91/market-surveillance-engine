@@ -178,7 +178,17 @@ func runCheckRunners() error {
 		if err := checkOneMarket(page, market, &runnersState); err != nil {
 			logWarn("Error on market %s: %s", market.URL, err)
 			saveDebug(page, fmt.Sprintf("check_runners_error_%d.png", idx+1))
+			isCrash := strings.Contains(err.Error(), "crashed") || strings.Contains(err.Error(), "Target closed")
 			_ = page.Close()
+			if isCrash {
+				logWarn("Browser crash detected — recreating browser context")
+				_ = browser.Close()
+				browser, ctx, err = createBrowserContext(pw)
+				if err != nil {
+					logWarn("Failed to recreate browser: %s", err)
+					break
+				}
+			}
 			page, err = ctx.NewPage()
 			if err != nil {
 				logWarn("Failed to recreate page: %s", err)
