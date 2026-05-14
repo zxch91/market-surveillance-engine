@@ -110,18 +110,51 @@ func joinURL(base, href string) string {
 	return b.ResolveReference(r).String()
 }
 
-func createBrowserContext(pw *playwright.Playwright) (playwright.Browser, playwright.BrowserContext, error) {
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+func launchBrowser(pw *playwright.Playwright, extraArgs []string) (playwright.Browser, error) {
+	args := []string{"--no-sandbox", "--disable-dev-shm-usage"}
+	args = append(args, extraArgs...)
+	return pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
 		Headless:       playwright.Bool(true),
 		ExecutablePath: playwright.String("/home/ubuntu/.cache/ms-playwright/chromium-1200/chrome-linux64/chrome"),
-		Args:           []string{"--no-sandbox", "--disable-dev-shm-usage"},
+		Args:           args,
+	})
+}
+
+func createBrowserContext(pw *playwright.Playwright) (playwright.Browser, playwright.BrowserContext, error) {
+	browser, err := launchBrowser(pw, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("launch browser: %w", err)
+	}
+	ctx, err := browser.NewContext(playwright.BrowserNewContextOptions{
+		Viewport:   &playwright.Size{Width: 1440, Height: 1400},
+		Locale:     playwright.String("en-GB"),
+		TimezoneId: playwright.String("Europe/London"),
+		UserAgent: playwright.String(
+			"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+				"(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+		),
+	})
+	if err != nil {
+		_ = browser.Close()
+		return nil, nil, fmt.Errorf("new context: %w", err)
+	}
+	return browser, ctx, nil
+}
+
+// createLightBrowserContext uses a smaller viewport and stricter memory limits
+// for pages that crash under the full config (e.g. heavy JS SPAs).
+func createLightBrowserContext(pw *playwright.Playwright) (playwright.Browser, playwright.BrowserContext, error) {
+	browser, err := launchBrowser(pw, []string{
+		"--disable-gpu",
+		"--single-process",
+		"--no-zygote",
+		"--js-flags=--max-old-space-size=256",
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("launch browser: %w", err)
 	}
-
 	ctx, err := browser.NewContext(playwright.BrowserNewContextOptions{
-		Viewport:   &playwright.Size{Width: 1440, Height: 1400},
+		Viewport:   &playwright.Size{Width: 1280, Height: 800},
 		Locale:     playwright.String("en-GB"),
 		TimezoneId: playwright.String("Europe/London"),
 		UserAgent: playwright.String(

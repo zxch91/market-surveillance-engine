@@ -232,7 +232,7 @@ func runWHMonitor() error {
 	}
 	defer pw.Stop()
 
-	browser, ctx, err := createBrowserContext(pw)
+	browser, ctx, err := createLightBrowserContext(pw)
 	if err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func runWHMonitor() error {
 			if isCrash {
 				logWarn("[WH] Browser crash detected — recreating browser context")
 				_ = browser.Close()
-				browser, ctx, err = createBrowserContext(pw)
+				browser, ctx, err = createLightBrowserContext(pw)
 				if err != nil {
 					logWarn("[WH] Failed to recreate browser: %s", err)
 					break
@@ -324,7 +324,7 @@ func runWHExplore() error {
 	}
 	defer pw.Stop()
 
-	browser, ctx, err := createBrowserContext(pw)
+	browser, ctx, err := createLightBrowserContext(pw)
 	if err != nil {
 		return err
 	}
