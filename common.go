@@ -205,11 +205,10 @@ func sendTelegram(text string) bool {
 // --- Cross-bookie notification helpers ---
 
 type RunnerUpdate struct {
-	Name      string
-	IsNew     bool
-	OldOdds   string
-	NewOdds   string
-	CrossOdds string // odds from the other bookie
+	Name    string
+	IsNew   bool
+	OldOdds string
+	NewOdds string
 }
 
 var raceStopWords = map[string]bool{
@@ -355,36 +354,28 @@ func movementLabel(oldOdds, newOdds string) string {
 const telegramMaxLen = 3800 // leave headroom under Telegram's 4096 limit
 
 // formatRunnerBlock formats one runner update entry.
-func formatRunnerBlock(bookie, crossBookie string, u RunnerUpdate) string {
-	cross := u.CrossOdds
-	if cross == "" {
-		cross = "not listed"
-	}
+func formatRunnerBlock(bookie string, u RunnerUpdate) string {
 	if u.IsNew {
-		return fmt.Sprintf("\n🆕 %s\n  %-14s %s\n  %-14s %s\n",
-			u.Name, bookie+":", u.NewOdds, crossBookie+":", cross)
+		return fmt.Sprintf("\n🆕 %s: %s\n", u.Name, u.NewOdds)
 	}
 	movement := movementLabel(u.OldOdds, u.NewOdds)
-	return fmt.Sprintf("\n🐎 %s%s\n  %-14s %s → %s\n  %-14s %s\n",
-		u.Name, movement, bookie+":", u.OldOdds, u.NewOdds, crossBookie+":", cross)
+	return fmt.Sprintf("\n🐎 %s%s\n  %s → %s\n", u.Name, movement, u.OldOdds, u.NewOdds)
 }
 
 // sendMarketUpdate sends one or more Telegram messages for a market's changes,
 // splitting automatically if the content exceeds Telegram's length limit.
-func sendMarketUpdate(bookie, crossBookie, marketText, marketURL string, updates []RunnerUpdate) {
+func sendMarketUpdate(bookie, marketText, marketURL string, updates []RunnerUpdate) {
 	header := fmt.Sprintf("📊 %s\n%s\n%s\n", marketText, bookie, marketURL)
 
 	msg := header
 	part := 1
-	total := (len(updates) + 14) / 15 // rough chunk estimate
-	_ = total
 
 	for _, u := range updates {
-		block := formatRunnerBlock(bookie, crossBookie, u)
+		block := formatRunnerBlock(bookie, u)
 		if len(msg)+len(block) > telegramMaxLen {
 			sendTelegram(msg)
 			part++
-			msg = fmt.Sprintf("📊 %s (cont. %d)\n", marketText, part) + block
+			msg = fmt.Sprintf("📊 %s (cont. %d)\n%s\n", marketText, part, bookie) + block
 		} else {
 			msg += block
 		}

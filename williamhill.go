@@ -204,13 +204,7 @@ func whCheckOneMarket(page playwright.Page, market Market, state *RunnersState) 
 	}
 
 	if len(updates) > 0 {
-		var ppState RunnersState
-		ppState.Markets = make(map[string]MarketRunners)
-		loadJSON(runnersStateFile, &ppState)
-		for i := range updates {
-			updates[i].CrossOdds = lookupOddsInState(&ppState, marketText, updates[i].Name)
-		}
-		sendMarketUpdate("William Hill", "Paddy Power", marketText, market.URL, updates)
+		sendMarketUpdate("William Hill", marketText, market.URL, updates)
 	}
 
 	runners := make(map[string]Runner, len(currentRunners))
