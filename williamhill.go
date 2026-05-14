@@ -54,27 +54,14 @@ func whGotoFuturesPage(page playwright.Page) error {
 }
 
 func whExpandAllSections(page playwright.Page) {
-	// Expand all accordion sections
 	toggles := page.Locator(whSectionToggleSelector)
 	count, _ := toggles.Count()
 	logInfo("[WH] Expanding %d collapsed sections", count)
 	for i := 0; i < count; i++ {
 		_ = toggles.First().Click(playwright.LocatorClickOptions{Timeout: playwright.Float(3000)})
-		page.WaitForTimeout(300)
+		page.WaitForTimeout(400)
 	}
-	page.WaitForTimeout(1000)
-
-	// Click all "Show More" buttons to reveal hidden markets within sections
-	showMore := page.Locator(`[data-test-id="ngs-desktop-horse-racing-future-races-app"] button:has-text("Show More")`)
-	smCount, _ := showMore.Count()
-	if smCount > 0 {
-		logInfo("[WH] Clicking %d 'Show More' buttons", smCount)
-		for i := 0; i < smCount; i++ {
-			_ = showMore.First().Click(playwright.LocatorClickOptions{Timeout: playwright.Float(3000)})
-			page.WaitForTimeout(500)
-		}
-		page.WaitForTimeout(1000)
-	}
+	page.WaitForTimeout(1500)
 }
 
 func whScrapeMarkets(page playwright.Page) ([]Market, error) {
