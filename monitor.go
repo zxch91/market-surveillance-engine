@@ -92,10 +92,11 @@ func runMonitor() error {
 		} else {
 			page.WaitForTimeout(1000)
 		}
+		// Save state after every market so progress isn't lost if we're killed
+		runnersState.UpdatedAtUTC = nowUTC()
+		saveJSON(runnersStateFile, runnersState)
 	}
 
-	runnersState.UpdatedAtUTC = nowUTC()
-	saveJSON(runnersStateFile, runnersState)
 	logInfo("Full monitor run complete")
 	return nil
 }

@@ -22,16 +22,17 @@ type MarketsState struct {
 
 func gotoFuturePage(page playwright.Page) error {
 	if _, err := page.Goto(startURL, playwright.PageGotoOptions{
-		WaitUntil: playwright.WaitUntilStateLoad,
-		Timeout:   playwright.Float(60000),
+		WaitUntil: playwright.WaitUntilStateCommit,
+		Timeout:   playwright.Float(30000),
 	}); err != nil {
 		return err
 	}
 	dismissCookieBanner(page)
-	page.WaitForTimeout(4000)
+	page.WaitForTimeout(8000)
+	saveDebug(page, "pp_page_state.png")
 	return page.Locator(raceLinkSelector).First().WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(30000),
+		Timeout: playwright.Float(60000),
 	})
 }
 
@@ -85,18 +86,21 @@ func runWatchMarkets() error {
 		oldIDs[m.MarketID] = true
 	}
 
+	logInfo("Starting playwright")
 	pw, err := playwright.Run()
 	if err != nil {
 		return fmt.Errorf("playwright run: %w", err)
 	}
 	defer pw.Stop()
 
+	logInfo("Launching browser")
 	browser, ctx, err := createBrowserContext(pw)
 	if err != nil {
 		return err
 	}
 	defer browser.Close()
 
+	logInfo("Opening page")
 	page, err := ctx.NewPage()
 	if err != nil {
 		return fmt.Errorf("new page: %w", err)
